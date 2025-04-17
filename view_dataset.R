@@ -54,3 +54,44 @@ View(transport_methods)
 View(travel_party)
 View(visitor_satisfaction_reasons)
 View(visitor_satisfaction)
+
+directory_path <- "./datasets"
+
+file_list <- list.files(
+  path = directory_path, pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+file_list
+
+data_list <- lapply(file_list, read.csv)
+
+names(data_list) <- tools::file_path_sans_ext(basename(file_list))
+
+names(data_list)
+
+View(data_list$accommodation)
+View(data_list$activities)
+View(data_list$branding)
+View(data_list$decision_making_process)
+View(data_list$ease_of_organisation_reasons)
+View(data_list$ease_of_organisation)
+View(data_list$environment)
+View(data_list$expenditure_by_industry)
+View(data_list$expenditure_by_payment_type)
+View(data_list$impact_of_covid19)
+View(data_list$itinerary)
+View(data_list$maori_cultural_experience)
+View(data_list$maori_cultural_sentiment)
+View(data_list$mobility)
+View(data_list$other_countries_visited)
+View(data_list$poor_experiences)
+View(data_list$secondary_purpose_of_visit)
+View(data_list$self_transport)
+View(data_list$survey_main_header)
+View(data_list$transport_methods)
+View(data_list$travel_party)
+View(data_list$visitor_satisfaction_reasons)
+View(data_list$visitor_satisfaction)
+
+lapply(data_list, View)

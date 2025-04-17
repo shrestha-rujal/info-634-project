@@ -1,0 +1,139 @@
+---
+title: "Filter tourists"
+author: "Rujal Shrestha"
+date: '`r format(Sys.time(), "%d %B, %Y")`'
+output:
+  html_document:
+    theme: flatly
+    highlight: zenburn
+  # pdf_document:
+  #   latex_engine: xelatex
+---
+
+```{r libraries, include=FALSE}
+# Import Libraries
+library(tidyverse)
+library(readr)
+```
+
+### Load datasets
+
+```{r, CACHE = FALSE}
+secondary_purpose_of_visit <- read.csv(
+  "./datasets/secondary_purpose_of_visit.csv",
+  header = TRUE
+)
+
+View(secondary_purpose_of_visit)
+
+survey_main_header <- read.csv(
+  "./datasets/survey_main_header.csv",
+  header = TRUE
+)
+
+View(survey_main_header)
+```
+
+`secondary_purpose_of_visit` has 22047 rows  
+`survey_main_header` has 22360 rows
+
+`survey_main_header` has dupliate rows
+
+### Combine data frames
+
+```{r, CACHE = FALSE}
+combined_df <- inner_join(
+  survey_main_header,
+  secondary_purpose_of_visit,
+  by = "response_id"
+)
+
+View(combined_df)
+```
+
+`combined_df` has 22360 rows, contains duplicate rows as well
+
+### Identify and remove duplicate responses
+
+```{r, CACHE = FALSE}
+duplicate_rows <- combined_df |>
+  count(response_id) |>
+  filter(n > 1) |>
+  select(response_id)
+
+View(duplicate_rows)
+
+filtered_combined_df <- combined_df |>
+  filter(!response_id %in% duplicate_rows$response_id)
+
+View(filtered_combined_df)
+```
+now `filtered_combined_df` has 21756 rows, which are all unique
+
+### Extract purpose related columns
+
+```{r, CACHE = FALSE}
+purpose <- filtered_combined_df |>
+  select(
+    response_id,
+    purpose_of_visit_main,
+    purpose_subtype,
+    reasons_for_travel_secondary
+  )
+
+View(purpose)
+```
+
+### Primary reasons for visit 
+
+```{r, CACHE = FALSE}
+purpose |>
+  group_by(purpose_of_visit_main) |>
+  summarise(n = n())
+```
+
+### Secondary reasons for visit
+
+```{r, CACHE = FALSE}
+purpose |>
+  group_by(reasons_for_travel_secondary) |>
+  summarise(n = n()) |>
+  View()
+```
+
+### Filtered tourists response_ids
+
+```{r, CACHE = FALSE}
+tourist_response_ids <- purpose |>
+  filter(
+    reasons_for_travel_secondary == "Holiday / vacation" |
+      purpose_of_visit_main == "Holiday / vacation"
+  ) |>
+  pull(response_id)
+
+length(tourist_response_ids)
+```
+
+16,774 total unique tourist responses
+
+### Combined table 
+
+Can use `tourist_response_ids` to filter out non-tourists in any table.  
+Example: `survey_main_header` below is filtered and results are stored in 
+`tourist_survey_main_header`.
+
+```{r, CACHE = FALSE}
+tourist_survey_main_header <- survey_main_header |>
+  filter(response_id %in% tourist_response_ids)
+
+View(tourist_survey_main_header)
+```
+
+### Saving to csv file
+
+```{r, CACHE = FALSE}
+write_csv(
+  tourist_survey_main_header,
+  "./outputs/tourist_survey_main_header.csv"
+)
+```
