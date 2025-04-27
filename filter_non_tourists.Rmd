@@ -14,20 +14,24 @@ output:
 # Import Libraries
 library(tidyverse)
 library(readr)
+
+getwd()
+
+setwd(paste(getwd(), "/INFO-634/info-634-project"))
 ```
 
 ### Load datasets
 
 ```{r, CACHE = FALSE}
 secondary_purpose_of_visit <- read.csv(
-  "./datasets/secondary_purpose_of_visit.csv",
+  "./INFO-634/info-634-project/datasets/secondary_purpose_of_visit.csv",
   header = TRUE
 )
 
 View(secondary_purpose_of_visit)
 
 survey_main_header <- read.csv(
-  "./datasets/survey_main_header.csv",
+  "./INFO-634/info-634-project/datasets/survey_main_header.csv",
   header = TRUE
 )
 
@@ -97,8 +101,7 @@ purpose |>
 ```{r, CACHE = FALSE}
 purpose |>
   group_by(reasons_for_travel_secondary) |>
-  summarise(n = n()) |>
-  View()
+  summarise(n = n())
 ```
 
 ### Filtered tourists response_ids

@@ -1,0 +1,162 @@
+---
+title: "Spending Habit Report"
+author: "Zhaoyu Li"
+date: "2025-04-25"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document:
+    fig_caption: true
+    fig_width: 10
+    fig_height: 6
+    number_sections: true
+    toc: true
+    toc_depth: 2
+    latex_engine: xelatex
+    keep_tex: false
+mainfont: Times New Roman
+fontsize: 11pt
+geometry: margin=1in
+---
+
+```{r setup, include=TRUE}
+# Code chunk settings (ensure code display)
+knitr::opts_chunk$set(
+  echo = TRUE,       # Code chunk settings
+  warning = TRUE,   # Hide warnings (optional)）
+  message = TRUE,   # Hide package loading messages (optional)
+  fig.cap = ""       # Figure title (can be customized)
+)
+
+# Load required packages
+library(tidyverse)
+library(scales)
+library(patchwork)
+
+# 1. Load and Prepare Data
+industry_data <- read_csv("expenditure_by_industry.csv")
+payment_data <- read_csv("expenditure_by_payment_type.csv")
+
+# Check basic structure
+glimpse(industry_data)
+glimpse(payment_data)
+
+# 2 Data Sorting
+## 2.1 Convert Industry Expenditure Data from Wide to Long Format
+industry_long <- industry_data %>%
+  pivot_longer(
+    cols = starts_with("cost_"), 
+    names_to = "Industry", 
+    values_to = "Expenditure"
+  ) %>%
+  mutate(Industry = str_replace(Industry, "cost_", ""))
+## 2.2 Convert Payment Type Data from Wide to Long Format
+payment_long <- payment_data %>%
+  pivot_longer(
+    cols = starts_with("percent_"),
+    names_to = "Payment_Type",
+    values_to = "Percent"
+  ) %>%
+  mutate(Payment_Type = str_replace(Payment_Type, "percent_", ""))
+## 2.3 Merge Two Long Tables
+full_data <- industry_long %>%
+  inner_join(payment_long, by = "response_id", relationship = "many-to-many")
+## 2.4 Calculate Weighted Expenditure
+full_data <- full_data %>%
+  mutate(Weighted_Expenditure = Expenditure * Percent)
+# 3. Summarize and Analyze
+## 3.1 Total Expenditure by Industry and Payment Method
+summary_data <- full_data %>%
+  group_by(Industry, Payment_Type) %>%
+  summarise(Total_Expenditure = sum(Weighted_Expenditure, na.rm = TRUE)) %>%
+  ungroup()
+## 3.2 Total Expenditure by Industry
+industry_summary <- summary_data %>%
+  group_by(Industry) %>%
+  summarise(Industry_Expenditure = sum(Total_Expenditure))
+## 3.3 Total Expenditure by Payment Method
+payment_summary <- summary_data %>%
+  group_by(Payment_Type) %>%
+  summarise(Payment_Expenditure = sum(Total_Expenditure))
+
+# 4. Visualizations
+## 4.1 Grouped Industry Expenditures (Stacked Bar Chart by Payment Method)
+payment_summary <- summary_data %>%
+  group_by(Payment_Type) %>%
+  summarise(Payment_Expenditure = sum(Total_Expenditure, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(
+    Percent = Payment_Expenditure / sum(Payment_Expenditure),
+    Payment_Label = paste0(Payment_Type, " (", scales::percent(Percent, accuracy = 0.1), ")")
+  )
+summary_data <- summary_data %>%
+  left_join(payment_summary %>% select(Payment_Type, Payment_Label), by = "Payment_Type")
+
+p1 <- ggplot(summary_data, aes(x = reorder(Industry, Total_Expenditure, sum),
+                               y = Total_Expenditure, fill = Payment_Label)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Industry Consumption Expenditure 
+       (by Payment Method)",
+       x = "Industry",
+       y = "Total Expenditure",
+       fill = "Payment Type") +
+  scale_y_continuous(labels = dollar_format()) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+p1
+
+## 4.2 Proportion of Payment Methods (Pie Chart)
+
+
+p2 <- payment_summary %>%
+  ggplot(aes(x = "", y = Percent, fill = Payment_Label)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = scales::percent(Percent, accuracy = 0.1)),
+            position = position_stack(vjust = 0.5), size = 4) +  # <-- 添加比例标签
+  scale_fill_brewer(palette = "Set3") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Overall Proportion of Payment Methods") +
+  theme_void(base_size = 14) +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+p2
+# 5 Summary of Consumption Habits Insights
+
+## 5.1 Industry Expenditure
+#   The sectors with the highest expenditure are accommodation, eating_out,
+### and transport.
+
+## 5.2 Payment Method Preferences
+### 5.2.1 Credit card (creditcardatpos) remains the primary payment method, 
+### especially in high-value industries (e.g., accommodation, shopping).  
+### 5.2.2 Digital payment has grown rapidly in fast-moving consumer goods (FMCG)
+### sectors (e.g., food_drink, transport), reflecting the demand for convenient 
+### payments.  
+### 5.2.3 Cash (cashatpos) usage is gradually declining, but it still accounts 
+### for a higher proportion in specific industries such as local_transport.
+
+## 5.3 Industry-Payment Method Linkages
+### 5.3.1 The food_drink industry has the highest proportion of digital payments.
+### 5.3.2 The accommodation and tourism industry relies far more on credit cards
+### than other payment methods.
+### 5.3.3 Expenditures in education and healthcare still favor traditional 
+### payment methods.
+
+# 6 Recommendations
+## 6.1 Promote the development of digital payment channels, especially in the 
+### food & drink and transport industries.
+## 6.2 Expand credit card partnership programs, such as cashback for large 
+### purchases and installment services, targeting customers in premium 
+### industries.
+## 6.3 Improve the cash payment experience for specific groups who prefer cash 
+### (e.g., elderly individuals, small-value transactions).
+
+
+
+
+
+
