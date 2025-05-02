@@ -1,0 +1,234 @@
+---
+title: "Naive Bayes - Predicting Satisfication (Binary)"
+author: "Yuxuan Wu"
+date: "2025-04-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include=FALSE}
+# Import Libraries
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(scales)
+library(dplyr)
+
+library(stringr)
+
+library(caret)
+library(e1071)
+
+```
+
+
+### 1. Data Preparation
+#### 1.1. Data Filtering
+```{r}
+# Filter Tourists with "Holiday / Vacation" as Primary or Secondary Travel Purpose
+survey_main_header <- read.csv(
+  "./dataset for modeling/survey_main_header.csv",
+  header = TRUE
+)
+
+secondary_purpose_of_visit <- read.csv(
+  "./dataset for modeling/secondary_purpose_of_visit.csv",
+  header = TRUE
+)
+
+combined_df <- inner_join(
+  survey_main_header,
+  secondary_purpose_of_visit,
+  by = "response_id"
+)
+
+duplicate_rows <- combined_df |>
+  count(response_id) |>
+  filter(n > 1) |>
+  select(response_id)
+
+filtered_combined_df <- combined_df |>
+  filter(!response_id %in% duplicate_rows$response_id)
+
+purpose <- filtered_combined_df |>
+  select(
+    response_id,
+    purpose_of_visit_main,
+    purpose_subtype,
+    reasons_for_travel_secondary
+  )
+
+purpose |>
+  group_by(purpose_of_visit_main) |>
+  summarise(n = n())
+
+purpose |>
+  group_by(reasons_for_travel_secondary) |>
+  summarise(n = n()) 
+
+tourist_response_ids <- purpose |>
+  filter(
+    reasons_for_travel_secondary == "Holiday / vacation" |
+      purpose_of_visit_main == "Holiday / vacation"
+  ) |>
+  pull(response_id)
+
+tourist_survey_main_header <- survey_main_header |>
+  filter(response_id %in% tourist_response_ids)
+```
+
+
+#### 1.2. Merge Tables
+```{r}
+# Filter tourist records in other tables based on selected response_ids, and merge into a consolidated table
+
+# Select relevant columns from tourist_survey_main_header for modeling
+tourist_survey_main_header <- tourist_survey_main_header |>
+  select(response_id, age_range, country_of_residence, gender, no_days_in_nz)
+
+# Load additional tables containing satisfaction and expenditure information
+visitor_satisfaction <- read.csv(
+  "./dataset for modeling/visitor_satisfaction.csv",
+  header = TRUE
+)
+
+expenditure_by_industry <- read.csv(
+  "./dataset for modeling/expenditure_by_industry.csv",
+  header = TRUE
+)
+
+# Filter satisfaction and expenditure records corresponding to the selected tourist response_ids
+tourist_visitor_satisfaction <- visitor_satisfaction |>
+  filter(response_id %in% tourist_response_ids)
+
+tourist_expenditure <- expenditure_by_industry |>
+  filter(response_id %in% tourist_response_ids)
+
+# Merge all datasets on response_id to create a unified tourist dataset
+tourist_full <- tourist_survey_main_header |>
+  left_join(tourist_visitor_satisfaction, by = "response_id") |>
+  left_join(tourist_expenditure, by = "response_id")
+
+```
+
+
+#### 1.3 Data Transformation and Data Cleaning
+```{r}
+# 1. Select features relevant for modeling
+tourist_full <- tourist_full |>
+  select(response_id, age_range, country_of_residence, gender, no_days_in_nz,
+         satisfaction_rating, cost_accomm, cost_dom_travel, cost_food_drink,
+         cost_entertainment, cost_shopping, cost_other, cost_tour_package,
+         cost_dom_flights, cost_car_rentals, cost_eating_out,
+         cost_day_cruise, exc_cost_int_flights, exc_cost_multi_night_cruise,
+         exc_cost_travel_insurance)
+
+# 2. Encode categorical variables as factors
+tourist_full <- tourist_full |>
+  mutate(
+    age_range = as.factor(age_range),
+    gender = as.factor(gender),
+    country_of_residence = as.factor(country_of_residence)
+  )
+
+# 3. Create the 'total_spending' feature by summing all relevant cost components
+tourist_full <- tourist_full |>
+  mutate(
+    total_spending = rowSums(
+      across(
+        c(cost_accomm, cost_dom_travel, cost_food_drink,
+          cost_entertainment, cost_shopping, cost_other,
+          cost_tour_package, cost_dom_flights, cost_car_rentals,
+          cost_eating_out, cost_day_cruise, exc_cost_int_flights,
+          exc_cost_multi_night_cruise, exc_cost_travel_insurance),
+        ~ replace_na(., 0)  # Replace missing cost values with zero before summing
+      )
+    )
+  )
+
+# 4. Remove records with missing values in essential fields
+tourist_full <- tourist_full |>
+  filter(
+    !is.na(age_range),
+    !is.na(country_of_residence),
+    !is.na(gender),
+    !is.na(no_days_in_nz),
+    !is.na(total_spending),
+    !is.na(satisfaction_rating)
+  )
+
+# 5. Transform 'satisfaction_rating' from text to numeric and derive a binary satisfaction label
+tourist_full <- tourist_full |>
+  mutate(
+    satisfaction_rating = str_extract(satisfaction_rating, "^[0-9]") |> as.numeric(),
+    satisfaction_binary = ifelse(satisfaction_rating %in% c(1, 2), "Low", "High"),
+    satisfaction_binary = as.factor(satisfaction_binary)
+  )
+
+# 6. Finalize the dataset with selected features for modeling
+model_data <- tourist_full |>
+  select(
+    response_id,
+    age_range,
+    country_of_residence,
+    gender,
+    no_days_in_nz,
+    total_spending,
+    satisfaction_binary
+  )
+```
+
+
+
+### 2. Modeling - Naive Bayes
+```{r}
+# 2.1. Stratified split into training and testing sets (80% training, 20% testing)
+set.seed(123)
+train_index <- createDataPartition(tourist_full$satisfaction_binary, p = 0.8, list = FALSE)
+
+train_data <- tourist_full[train_index, ]
+test_data <- tourist_full[-train_index, ]
+
+# 2.2. Oversample the "Low" class in the training set only
+# Extract "Low" samples
+low_samples <- train_data |>
+  filter(satisfaction_binary == "Low")
+
+# Oversample "Low" samples to balance with "High" samples
+low_samples_oversampled <- low_samples |>
+  sample_frac(size = (sum(train_data$satisfaction_binary == "High") / sum(train_data$satisfaction_binary == "Low")), replace = TRUE)
+
+# Combine the original training set with the oversampled "Low" samples
+train_data_balanced <- bind_rows(
+  train_data,
+  low_samples_oversampled
+)
+
+# Check the new class distribution in the balanced training set
+table(train_data_balanced$satisfaction_binary)
+
+
+# 2.3. Train the Naive Bayes model (with Laplace smoothing to avoid zero probabilities)
+nb_model <- naiveBayes(
+  satisfaction_binary ~ age_range + country_of_residence + gender + no_days_in_nz + total_spending,
+  data = train_data_balanced,
+  laplace = 1
+)
+
+# 2.4. Make predictions on the testing set
+nb_predictions <- predict(nb_model, newdata = test_data)
+
+# 2.5. Evaluate the model performance using a confusion matrix
+confusionMatrix(nb_predictions, test_data$satisfaction_binary)
+
+
+```
+
+
+
+
+
