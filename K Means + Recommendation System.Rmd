@@ -1,0 +1,415 @@
+---
+title: "K Means + Recommendation System"
+author: "Yuxuan Wu"
+date: "2025-04-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r, include=FALSE}
+# Import Libraries
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(fastDummies)
+
+library(stringr)
+
+
+```
+
+
+### 1. Data Preparation
+```{r}
+# Filter Tourists with "Holiday / Vacation" as Primary or Secondary Travel Purpose
+survey_main_header <- read.csv(
+  "./dataset for modeling/survey_main_header.csv",
+  header = TRUE
+)
+
+secondary_purpose_of_visit <- read.csv(
+  "./dataset for modeling/secondary_purpose_of_visit.csv",
+  header = TRUE
+)
+
+combined_df <- inner_join(
+  survey_main_header,
+  secondary_purpose_of_visit,
+  by = "response_id"
+)
+
+duplicate_rows <- combined_df |>
+  count(response_id) |>
+  filter(n > 1) |>
+  select(response_id)
+
+filtered_combined_df <- combined_df |>
+  filter(!response_id %in% duplicate_rows$response_id)
+
+purpose <- filtered_combined_df |>
+  select(
+    response_id,
+    purpose_of_visit_main,
+    purpose_subtype,
+    reasons_for_travel_secondary
+  )
+
+purpose |>
+  group_by(purpose_of_visit_main) |>
+  summarise(n = n())
+
+purpose |>
+  group_by(reasons_for_travel_secondary) |>
+  summarise(n = n()) 
+
+tourist_response_ids <- purpose |>
+  filter(
+    reasons_for_travel_secondary == "Holiday / vacation" |
+      purpose_of_visit_main == "Holiday / vacation"
+  ) |>
+  pull(response_id)
+
+tourist_survey_main_header <- survey_main_header |>
+  filter(response_id %in% tourist_response_ids)
+```
+
+
+
+```{r}
+# Filter tourist records in other tables based on selected response_ids, and merge into a consolidated table
+
+# Select relevant columns from tourist_survey_main_header for modeling
+tourist_survey_main_header <- tourist_survey_main_header |>
+  select(response_id, age_range, country_of_residence, gender, no_days_in_nz)
+
+# Load additional tables containing satisfaction and expenditure information
+visitor_satisfaction <- read.csv(
+  "./dataset for modeling/visitor_satisfaction.csv",
+  header = TRUE
+)
+
+expenditure_by_industry <- read.csv(
+  "./dataset for modeling/expenditure_by_industry.csv",
+  header = TRUE
+)
+
+# Filter satisfaction and expenditure records corresponding to the selected tourist response_ids
+tourist_visitor_satisfaction <- visitor_satisfaction |>
+  filter(response_id %in% tourist_response_ids)
+
+tourist_expenditure <- expenditure_by_industry |>
+  filter(response_id %in% tourist_response_ids)
+
+# Merge all datasets on response_id to create a unified tourist dataset
+tourist_full <- tourist_survey_main_header |>
+  left_join(tourist_visitor_satisfaction, by = "response_id") |>
+  left_join(tourist_expenditure, by = "response_id")
+
+```
+
+
+```{r}
+# 1. Select features relevant for modeling
+tourist_full <- tourist_full |>
+  select(response_id, age_range, country_of_residence, gender, no_days_in_nz,
+         satisfaction_rating, cost_accomm, cost_dom_travel, cost_food_drink,
+         cost_entertainment, cost_shopping, cost_other, cost_tour_package,
+         cost_dom_flights, cost_car_rentals, cost_eating_out,
+         cost_day_cruise, exc_cost_int_flights, exc_cost_multi_night_cruise,
+         exc_cost_travel_insurance)
+
+# 2. Encode categorical variables as factors
+tourist_full <- tourist_full |>
+  mutate(
+    age_range = as.factor(age_range),
+    gender = as.factor(gender),
+    country_of_residence = as.factor(country_of_residence)
+  )
+
+# 3. Create the 'total_spending' feature by summing all relevant cost components
+tourist_full <- tourist_full |>
+  mutate(
+    total_spending = rowSums(
+      across(
+        c(cost_accomm, cost_dom_travel, cost_food_drink,
+          cost_entertainment, cost_shopping, cost_other,
+          cost_tour_package, cost_dom_flights, cost_car_rentals,
+          cost_eating_out, cost_day_cruise, exc_cost_int_flights,
+          exc_cost_multi_night_cruise, exc_cost_travel_insurance),
+        ~ replace_na(., 0)  # Replace missing cost values with zero before summing
+      )
+    )
+  )
+
+# 4. Remove records with missing values in essential fields
+tourist_full <- tourist_full |>
+  filter(
+    !is.na(age_range),
+    !is.na(country_of_residence),
+    !is.na(gender),
+    !is.na(no_days_in_nz),
+    !is.na(total_spending),
+    !is.na(satisfaction_rating)
+  )
+
+# 5. Transform 'satisfaction_rating' from text to numeric and derive a binary satisfaction label
+tourist_full <- tourist_full |>
+  mutate(
+    satisfaction_rating = str_extract(satisfaction_rating, "^[0-9]") |> as.numeric(),
+    satisfaction_binary = ifelse(satisfaction_rating %in% c(1, 2), "Low", "High"),
+    satisfaction_binary = as.factor(satisfaction_binary)
+  )
+
+# 6. Finalize the dataset with selected features for modeling
+model_data <- tourist_full |>
+  select(
+    response_id,
+    age_range,
+    country_of_residence,
+    gender,
+    no_days_in_nz,
+    total_spending,
+    satisfaction_binary
+  )
+```
+
+
+
+## K-Means Recommendation System
+```{r}
+### 0. Load libraries
+
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(cluster)   # For clustering visualization
+library(factoextra) # For PCA visualization
+
+# 1. Prepare the data
+
+# Convert age_range to numeric midpoint
+age_midpoints <- c(
+  "20 - 24" = 22, 
+  "25 - 29" = 27, 
+  "30 - 34" = 32, 
+  "35 - 39" = 37, 
+  "40 - 44" = 42, 
+  "45 - 49" = 47, 
+  "50 - 54" = 52, 
+  "55 - 59" = 57,
+  "60 - 64" = 62, 
+  "65 - 69" = 67, 
+  "70 - 74" = 72, 
+  "75 or older" = 77,  
+  "Under 20" = 18,     
+  "80 - 84" = 82,
+  "85 - 89" = 87
+)
+
+# Remove age range of 'Rather not say'
+model_data <- model_data |>
+  filter(age_range != "Rather not say")
+
+# Transform into numerical
+model_data <- model_data |>
+  mutate(
+    age_numeric = as.numeric(age_midpoints[as.character(age_range)])
+  )
+
+
+# One-hot encode gender
+cluster_features <- model_data |>
+  select(age_numeric, no_days_in_nz, total_spending, gender) |>
+  dummy_cols(select_columns = "gender", remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+
+# Standardize numeric features
+cluster_features_scaled <- scale(cluster_features)
+
+
+# 2. Perform K-Means clustering
+set.seed(123)
+kmeans_model <- kmeans(cluster_features_scaled, centers = 5, nstart = 25)
+
+# Attach cluster labels to model_data
+model_data$cluster <- kmeans_model$cluster
+
+# 3. Link tourist activities
+activities <- read.csv("./dataset for modeling/activities.csv")
+
+tourist_activities <- activities |>
+  filter(response_id %in% model_data$response_id) |>
+  left_join(model_data[, c("response_id", "cluster")], by = "response_id")
+
+# 4. Summarize top activities for each cluster
+top_activities_per_cluster <- tourist_activities |>
+  group_by(cluster, activity) |>
+  summarise(count = n(), .groups = "drop") |>
+  group_by(cluster) |>
+  slice_max(order_by = count, n = 5)
+
+
+
+
+```
+
+
+```{r}
+### 5. Visualize clustering results using PCA
+
+# Perform Principal Component Analysis (PCA)
+pca_result <- prcomp(cluster_features_scaled)
+
+# Create a dataframe for plotting
+pca_data <- as.data.frame(pca_result$x)
+pca_data$cluster <- as.factor(model_data$cluster)
+
+# Plot PCA results with cluster coloring
+ggplot(pca_data, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(alpha = 0.7, size = 2) +
+  labs(title = "Tourist Clusters Visualized via PCA",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1")
+
+
+```
+
+
+Comment:
+
+
+```{r}
+### 6. Interpret clustering results
+
+# Summarize average features per cluster
+cluster_profiles <- model_data |>
+  group_by(cluster) |>
+  summarise(
+    mean_age = round(mean(age_numeric), 1),
+    mean_days = round(mean(no_days_in_nz), 1),
+    mean_spending = round(mean(total_spending), 1),
+    n = n()
+  ) |>
+  arrange(cluster)
+
+print(cluster_profiles)
+
+
+```
+
+
+```{r}
+### 7. Generate textual description for each cluster
+
+generate_cluster_description <- function(cluster_row) {
+  paste0(
+    "Cluster ", cluster_row$cluster, ": On average, tourists are around ", 
+    cluster_row$mean_age, " years old, stay for about ", 
+    cluster_row$mean_days, " days, and spend approximately $", 
+    cluster_row$mean_spending, ". (", cluster_row$n, " tourists)"
+  )
+}
+
+# Output cluster profiles as text
+apply(cluster_profiles, 1, function(row) generate_cluster_description(as.list(row)))
+
+```
+
+
+```{r}
+### 8. Recommend Top-3 activities for each cluster (excluding 'None of these')
+
+top_activities_per_cluster <- tourist_activities |>
+  group_by(cluster, activity) |>
+  summarise(count = n(), .groups = "drop") |>
+  filter(activity != "None of these") |>   
+  group_by(cluster) |>
+  slice_max(order_by = count, n = 3)
+
+
+```
+
+
+
+```{r}
+### 9. Predict cluster for a new tourist and recommend activities
+
+# Define a new tourist's profile
+new_user <- data.frame(
+  age_numeric = 30,
+  no_days_in_nz = 12,
+  total_spending = 6000,
+  gender_Male = 1,
+  gender_Female = 0,
+  gender_Another_Gender = 0  
+)
+
+# Standardize new user's features
+new_user_scaled <- as.data.frame(scale(
+  new_user,
+  center = attr(cluster_features_scaled, "scaled:center"),
+  scale = attr(cluster_features_scaled, "scaled:scale")
+))
+
+
+# Calculate Euclidean distances to each cluster center
+distances <- apply(kmeans_model$centers, 1, function(center) sum((center - as.numeric(new_user_scaled))^2))
+
+# Assign the new tourist to the closest cluster
+predicted_cluster <- which.min(distances)
+
+print(paste("New tourist predicted to belong to Cluster", predicted_cluster))
+
+# Retrieve Top-3 recommended activities
+recommended_activities <- top_activities_per_cluster |>
+  filter(cluster == predicted_cluster)
+
+# Output the recommendation explanation
+cluster_profile_row <- cluster_profiles |> filter(cluster == predicted_cluster)
+
+cat(
+  "Recommendation Explanation:\n",
+  "Based on the tourist's age, gender, spending, and days of stay, they are most similar to Cluster ",
+  predicted_cluster, ".\n", 
+  generate_cluster_description(as.list(cluster_profile_row)), "\n",
+  "Recommended activities are:\n",
+  paste0("- ", recommended_activities$activity, collapse = "\n")
+)
+
+```
+
+
+
+
+```{r}
+# Check the proportion of variance explained by each principal component of PCA
+summary(pca_result)
+
+```
+
+```{r}
+library(factoextra)
+
+fviz_pca_var(pca_result,
+             col.var = "contrib",  
+             gradient.cols = c("lightblue", "blue", "darkblue"),
+             repel = TRUE) +  
+  labs(title = "Variable Contributions to Principal Components")
+
+```
+
+Based on PCA variable contribution analysis, the first principal component (PC1) predominantly captures gender-related variance, particularly distinguishing between male and female tourists. The second component (PC2) is largely driven by behavioral traits such as duration of stay and total spending, indicating a potential differentiation between short-term/low-spending and long-term/high-spending tourists.
+
+
+```{r}
+
+```
+
